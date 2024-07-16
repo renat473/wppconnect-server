@@ -38,26 +38,36 @@ if (config.webhook.uploadS3) {
   mime = config.webhook.uploadS3 ? mimetypes : null;
   crypto = config.webhook.uploadS3 ? Crypto : null;
 }
+if (config?.websocket?.uploadS3) {
+  mime = config.websocket.uploadS3 ? mimetypes : null;
+  crypto = config.websocket.uploadS3 ? Crypto : null;
+}
 
-export function contactToArray(number: any, isGroup?: boolean) {
+export function contactToArray(
+  number: any,
+  isGroup?: boolean,
+  isNewsletter?: boolean
+) {
   const localArr: any = [];
   if (Array.isArray(number)) {
     for (let contact of number) {
-      isGroup
+      isGroup || isNewsletter
         ? (contact = contact.split('@')[0])
         : (contact = contact.split('@')[0]?.replace(/[^\w ]/g, ''));
       if (contact !== '')
         if (isGroup) (localArr as any).push(`${contact}@g.us`);
+        else if (isNewsletter) (localArr as any).push(`${contact}@newsletter`);
         else (localArr as any).push(`${contact}@c.us`);
     }
   } else {
     const arrContacts = number.split(/\s*[,;]\s*/g);
     for (let contact of arrContacts) {
-      isGroup
+      isGroup || isNewsletter
         ? (contact = contact.split('@')[0])
         : (contact = contact.split('@')[0]?.replace(/[^\w ]/g, ''));
       if (contact !== '')
         if (isGroup) (localArr as any).push(`${contact}@g.us`);
+        else if (isNewsletter) (localArr as any).push(`${contact}@newsletter`);
         else (localArr as any).push(`${contact}@c.us`);
     }
   }
@@ -108,6 +118,13 @@ export async function callWebHook(
   const webhook =
     client?.config.webhook || req.serverOptions.webhook.url || false;
   if (webhook) {
+    if (
+      req.serverOptions.webhook?.ignore &&
+      (req.serverOptions.webhook.ignore.includes(event) ||
+        req.serverOptions.webhook.ignore.includes(data?.from) ||
+        req.serverOptions.webhook.ignore.includes(data?.type))
+    )
+      return;
     if (req.serverOptions.webhook.autoDownload)
       await autoDownload(client, req, data);
     try {
@@ -136,32 +153,47 @@ export async function callWebHook(
   }
 }
 
-async function autoDownload(client: any, req: any, message: any) {
+export async function autoDownload(client: any, req: any, message: any) {
   try {
     if (message && (message['mimetype'] || message.isMedia || message.isMMS)) {
       const buffer = await client.decryptFile(message);
-      if (req.serverOptions.webhook.uploadS3) {
+      if (
+        req.serverOptions.webhook.uploadS3 ||
+        req.serverOptions?.websocket?.uploadS3
+      ) {
         const hashName = crypto.randomBytes(24).toString('hex');
 
         if (
-          !config.aws_s3.region ||
-          !config.aws_s3.access_key_id ||
-          !config.aws_s3.secret_key
+          !config?.aws_s3?.region ||
+          !config?.aws_s3?.access_key_id ||
+          !config?.aws_s3?.secret_key
         )
           throw new Error('Please, configure your aws configs');
-        const s3Client = new S3Client({ region: config.aws_s3.region });
-        let bucketName = config.aws_s3.defaultBucketName
-          ? config.aws_s3.defaultBucketName
+        const s3Client = new S3Client({
+          region: config?.aws_s3?.region,
+          endpoint: config?.aws_s3?.endpoint || undefined,
+          forcePathStyle: config?.aws_s3?.forcePathStyle || undefined,
+        });
+        let bucketName = config?.aws_s3?.defaultBucketName
+          ? config?.aws_s3?.defaultBucketName
           : client.session;
         bucketName = bucketName
           .normalize('NFD')
-          .replace(/[\u0300-\u036f]|[-— _.,?!]/g, '')
+          .replace(/[\u0300-\u036f]|[— _.,?!]/g, '')
           .toLowerCase();
+        bucketName =
+          bucketName.length < 3
+            ? bucketName +
+              `${Math.floor(Math.random() * (999 - 100 + 1)) + 100}`
+            : bucketName;
         const fileName = `${
           config.aws_s3.defaultBucketName ? client.session + '/' : ''
         }${hashName}.${mime.extension(message.mimetype)}`;
 
-        if (!(await bucketAlreadyExists(bucketName))) {
+        if (
+          !config.aws_s3.defaultBucketName &&
+          !(await bucketAlreadyExists(bucketName))
+        ) {
           await s3Client.send(
             new CreateBucketCommand({
               Bucket: bucketName,
